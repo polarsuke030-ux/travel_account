@@ -6,6 +6,8 @@
 <title>경비장 — 여행 경비 정산</title>
 <script src="https://cdn.tailwindcss.com"></script>
 <link rel="stylesheet" href="https://cdn.jsdelivr.net/gh/orioncactus/pretendard@v1.3.9/dist/web/static/pretendard.css" />
+<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-app-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore-compat.js"></script>
 <style>
   :root{
     --bg:#F7F8FA;
@@ -47,6 +49,134 @@
 ========================================================= */
 const STORAGE_KEY = 'gyeongbijang_trips_v3';
 
+/* =========================================================
+   ☁️ 실시간 동기화 (Firebase)
+   ── 아래 firebaseConfig 안의 값들을 본인의 Firebase 콘솔에서 복사한 값으로 바꿔주세요.
+   ── 채우지 않아도 앱은 정상 작동해요(이 기기에만 저장). 채우면 "동기화 코드"로 여러 기기 간 자동 동기화됩니다.
+========================================================= */
+const firebaseConfig = {
+  apiKey: "AIzaSyAEN7zDH9DCeUh4kDtNTFZMbi9f8x0Mc-8",
+  authDomain: "travel-account-e2fc9.firebaseapp.com",
+  projectId: "travel-account-e2fc9",
+  storageBucket: "travel-account-e2fc9.firebasestorage.app",
+  messagingSenderId: "135611606850",
+  appId: "1:135611606850:web:247fc72fc4f9ee886bcadb"
+};
+let db = null;
+let syncEnabled = false;
+try{
+  if(firebaseConfig.apiKey && !firebaseConfig.apiKey.includes('여기에')){
+    firebase.initializeApp(firebaseConfig);
+    db = firebase.firestore();
+    syncEnabled = true;
+  }
+}catch(e){ console.warn('Firebase 초기화 실패 — 이 기기에만 저장합니다.', e); }
+
+const SYNC_CODE_KEY = 'gyeongbijang_sync_code';
+let syncCode = localStorage.getItem(SYNC_CODE_KEY) || '';
+let applyingRemote = false;
+let unsubscribeSync = null;
+
+function generateSyncCode(){ return Math.random().toString(36).slice(2,8).toUpperCase(); }
+
+function pushToCloud(){
+  if(!syncEnabled || !syncCode || applyingRemote) return;
+  db.collection('syncGroups').doc(syncCode).set({ trips: state.trips, updatedAt: Date.now() })
+    .catch(err => console.warn('클라우드 저장 실패', err));
+}
+
+function startSyncListener(){
+  if(!syncEnabled || !syncCode) return;
+  if(unsubscribeSync) unsubscribeSync();
+  unsubscribeSync = db.collection('syncGroups').doc(syncCode).onSnapshot(doc => {
+    if(!doc.exists) return;
+    const data = doc.data();
+    if(!data || !Array.isArray(data.trips)) return;
+    applyingRemote = true;
+    state.trips = data.trips;
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(state.trips));
+    render();
+    applyingRemote = false;
+  }, err => console.warn('동기화 수신 실패', err));
+}
+
+function createSyncGroup(){
+  if(!syncEnabled){ alertBar('Firebase 설정이 안 되어 있어요.'); return; }
+  syncCode = generateSyncCode();
+  localStorage.setItem(SYNC_CODE_KEY, syncCode);
+  db.collection('syncGroups').doc(syncCode).set({ trips: state.trips, updatedAt: Date.now() })
+    .then(() => { startSyncListener(); closeModal(); render(); alertBar('동기화를 시작했어요. 코드: ' + syncCode); })
+    .catch(() => alertBar('동기화 생성에 실패했어요. 설정값과 보안 규칙을 확인해주세요.'));
+}
+
+function joinSyncGroup(rawCode){
+  if(!syncEnabled){ alertBar('Firebase 설정이 안 되어 있어요.'); return; }
+  const code = (rawCode||'').trim().toUpperCase();
+  if(!code){ alertBar('코드를 입력해주세요.'); return; }
+  db.collection('syncGroups').doc(code).get().then(doc => {
+    if(!doc.exists){ alertBar('해당 코드의 동기화 그룹을 찾을 수 없어요.'); return; }
+    syncCode = code;
+    localStorage.setItem(SYNC_CODE_KEY, syncCode);
+    const data = doc.data();
+    if(data && Array.isArray(data.trips)){
+      state.trips = data.trips;
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(state.trips));
+    }
+    startSyncListener();
+    closeModal();
+    render();
+    alertBar('동기화 연결 완료!');
+  }).catch(() => alertBar('연결에 실패했어요. 코드를 다시 확인해주세요.'));
+}
+
+function leaveSyncGroup(){
+  if(unsubscribeSync) unsubscribeSync();
+  unsubscribeSync = null;
+  syncCode = '';
+  localStorage.removeItem(SYNC_CODE_KEY);
+  closeModal();
+  render();
+  alertBar('동기화를 껐어요. 이제부터 이 기기에만 저장돼요.');
+}
+
+function openSyncModal(){ document.getElementById('modal-root').innerHTML = renderSyncModal(); }
+function renderSyncModal(){
+  if(!syncEnabled){
+    return `
+    <div class="fixed inset-0 bg-black/40 flex items-center justify-center z-50 px-4 fade-in" onclick="if(event.target===this) closeModal()">
+      <div class="card w-full max-w-[380px] p-6 soft-shadow">
+        <h2 class="text-[18px] font-bold mb-3">기기 간 자동 동기화</h2>
+        <p class="text-[13px] text-[var(--ink-3)] mb-4 leading-relaxed">이 기능을 쓰려면 코드 상단 <code>firebaseConfig</code>에 본인의 Firebase 프로젝트 설정값을 붙여넣어야 해요.</p>
+        <button class="w-full py-3 rounded-2xl text-[15px] font-semibold text-white bg-[var(--blue)] tap" onclick="closeModal()">확인</button>
+      </div>
+    </div>`;
+  }
+  return `
+  <div class="fixed inset-0 bg-black/40 flex items-center justify-center z-50 px-4 fade-in" onclick="if(event.target===this) closeModal()">
+    <div class="card w-full max-w-[380px] p-6 soft-shadow">
+      <h2 class="text-[18px] font-bold mb-4">기기 간 자동 동기화</h2>
+      ${syncCode ? `
+        <p class="text-[13px] text-[var(--ink-3)] mb-2">현재 동기화 코드</p>
+        <div class="flex items-center gap-2 mb-4">
+          <p class="flex-1 text-[22px] font-bold tracking-widest text-[var(--blue)] bg-[var(--blue-dim)] rounded-2xl px-4 py-3 text-center">${syncCode}</p>
+          <button class="w-11 h-11 rounded-2xl bg-[var(--bg)] flex items-center justify-center tap" onclick="navigator.clipboard.writeText('${syncCode}'); alertBar('복사했어요.')">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none"><rect x="9" y="9" width="13" height="13" rx="2" stroke="#4E5968" stroke-width="1.8"/><path d="M5 15H4a2 2 0 01-2-2V4a2 2 0 012-2h9a2 2 0 012 2v1" stroke="#4E5968" stroke-width="1.8"/></svg>
+          </button>
+        </div>
+        <p class="text-[12px] text-[var(--ink-3)] mb-5">다른 기기에서 같은 사이트를 열고 이 코드를 입력하면 실시간으로 데이터가 동기화돼요.</p>
+        <button class="w-full py-3 rounded-2xl text-[14px] font-semibold text-[var(--red)] bg-[var(--bg)] tap" onclick="if(confirm('동기화를 끌까요? 이 기기는 이후 로컬에만 저장돼요.')) leaveSyncGroup()">동기화 끄기</button>
+      ` : `
+        <button class="w-full py-3 rounded-2xl text-[15px] font-semibold text-white bg-[var(--blue)] tap mb-3" onclick="createSyncGroup()">새 동기화 시작하기</button>
+        <p class="text-[12px] text-[var(--ink-3)] text-center mb-4">또는</p>
+        <label class="block text-[13px] text-[var(--ink-2)] mb-1.5">다른 기기의 동기화 코드 입력</label>
+        <input id="join-code-input" type="text" placeholder="예: AB12CD" class="w-full border border-[var(--line)] rounded-2xl px-4 py-3 text-[15px] mb-3 uppercase tracking-widest text-center" />
+        <button class="w-full py-3 rounded-2xl text-[14px] font-semibold text-white bg-[var(--ink)] tap" onclick="joinSyncGroup(document.getElementById('join-code-input').value)">이 코드로 연결하기</button>
+      `}
+      <button class="w-full py-2.5 mt-3 text-[13px] text-[var(--ink-3)]" onclick="closeModal()">닫기</button>
+    </div>
+  </div>`;
+}
+
 const CATEGORY_META = {
   '숙박':      { color:'#15499E', label:'숙박' },
   '항공권':    { color:'#1B64DA', label:'항공권' },
@@ -74,7 +204,7 @@ function loadTrips(){
   try{ state.trips = JSON.parse(localStorage.getItem(STORAGE_KEY) || '[]'); }
   catch(e){ console.error('저장된 데이터를 불러오지 못했습니다', e); state.trips = []; }
 }
-function saveTrips(){ localStorage.setItem(STORAGE_KEY, JSON.stringify(state.trips)); }
+function saveTrips(){ localStorage.setItem(STORAGE_KEY, JSON.stringify(state.trips)); pushToCloud(); }
 function uid(p='id'){ return p+'_'+Date.now().toString(36)+'_'+Math.random().toString(36).slice(2,8); }
 function escRe(s){ return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'); }
 
@@ -225,10 +355,22 @@ function renderHome(){
 
   return `
   <div class="pt-8 pb-6 fade-in">
-    <div class="rounded-[28px] p-6 sm:p-7 mb-6" style="background:linear-gradient(135deg,#3182F6,#1B64DA);">
+    <div class="rounded-[28px] p-6 sm:p-7 mb-4" style="background:linear-gradient(135deg,#3182F6,#1B64DA);">
       <h1 class="text-[24px] font-bold text-white mb-1.5">내 여행</h1>
       <p class="text-[14px] text-white/80">${totalTrips > 0 ? `지금까지 <span class="font-semibold text-white">${totalTrips}개</span>의 여행, <span class="font-semibold text-white">${totalTxns}건</span>의 지출을 기록했어요` : '첫 여행을 만들고 지출을 기록해보세요'}</p>
     </div>
+    <div class="flex items-center gap-2 mb-2">
+      <button class="flex-1 py-2.5 rounded-2xl text-[13px] font-medium text-[var(--ink-2)] bg-white soft-shadow tap" onclick="exportData()">데이터 내보내기</button>
+      <label class="flex-1 py-2.5 rounded-2xl text-[13px] font-medium text-[var(--ink-2)] bg-white soft-shadow tap text-center cursor-pointer">
+        데이터 가져오기
+        <input id="import-file-input" type="file" accept="application/json" class="hidden" onchange="handleImportFile(event)" />
+      </label>
+    </div>
+    <button class="w-full py-2.5 rounded-2xl text-[13px] font-medium tap mb-6 flex items-center justify-center gap-1.5 ${syncCode ? 'bg-[var(--blue-dim)] text-[var(--blue)]' : 'bg-white soft-shadow text-[var(--ink-2)]'}" onclick="openSyncModal()">
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="none"><path d="M21 12a9 9 0 11-2.64-6.36" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><path d="M21 3v6h-6" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+      ${syncCode ? `기기 간 동기화 켜짐 · ${syncCode}` : '기기 간 자동 동기화 설정'}
+    </button>
+    <p class="text-[12px] text-[var(--ink-3)] -mt-3 mb-1">${syncCode ? '동기화가 켜져 있어요. 다른 기기에서도 같은 코드를 입력하면 실시간으로 함께 보여요.' : '데이터는 이 기기의 브라우저에만 저장돼요. 다른 기기(예: 아이폰)에서 이어보려면 내보내기/가져오기를 쓰거나, 위에서 자동 동기화를 켜주세요.'}</p>
   </div>
   <div class="grid grid-cols-1 sm:grid-cols-2 gap-4 pb-10">
     <div class="card tap cursor-pointer border-2 border-dashed border-[#C7D2E0] hover:border-[var(--blue)] p-5 flex flex-col items-center justify-center text-center min-h-[168px] fade-in"
@@ -243,6 +385,50 @@ function renderHome(){
   </div>
   ${trips.length===0 ? `<p class="text-center text-[13px] text-[var(--ink-3)] pb-10">아직 등록된 여행이 없어요. 첫 여행을 만들어보세요.</p>` : ''}
   `;
+}
+
+/* =========================================================
+   데이터 내보내기 / 가져오기 (기기 간 이동용 — 자동 동기화는 아님)
+========================================================= */
+function exportData(){
+  if(state.trips.length === 0){ alertBar('내보낼 데이터가 없어요.'); return; }
+  const dataStr = JSON.stringify(state.trips, null, 2);
+  const blob = new Blob([dataStr], { type:'application/json' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  const today = new Date().toISOString().slice(0,10);
+  a.href = url;
+  a.download = `경비장_백업_${today}.json`;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  URL.revokeObjectURL(url);
+  alertBar('백업 파일을 다운로드했어요.');
+}
+
+function handleImportFile(evt){
+  const file = evt.target.files[0];
+  if(!file) return;
+  const reader = new FileReader();
+  reader.onload = e => {
+    try{
+      const imported = JSON.parse(e.target.result);
+      if(!Array.isArray(imported)) throw new Error('invalid format');
+      let added = 0, updated = 0;
+      imported.forEach(trip => {
+        const idx = state.trips.findIndex(t => t.id === trip.id);
+        if(idx >= 0){ state.trips[idx] = trip; updated++; }
+        else { state.trips.push(trip); added++; }
+      });
+      saveTrips();
+      render();
+      alertBar(`가져오기 완료 · 새 여행 ${added}개, 갱신 ${updated}개`);
+    }catch(err){
+      alertBar('파일을 읽을 수 없어요. 이 앱에서 내보낸 백업 파일인지 확인해주세요.');
+    }
+  };
+  reader.readAsText(file, 'UTF-8');
+  evt.target.value = '';
 }
 
 /* =========================================================
@@ -772,6 +958,7 @@ function deleteTxn(tripId, txnId){
 ========================================================= */
 loadTrips();
 render();
+startSyncListener();
 </script>
 </body>
 </html>
