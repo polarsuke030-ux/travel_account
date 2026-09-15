@@ -177,7 +177,7 @@ function renderSyncModal(){
   </div>`;
 }
 
-const CATEGORY_META = {
+const DEFAULT_CATEGORY_META = {
   '숙박':      { color:'#15499E', label:'숙박' },
   '항공권':    { color:'#1B64DA', label:'항공권' },
   '대중교통':  { color:'#3182F6', label:'대중교통' },
@@ -187,7 +187,8 @@ const CATEGORY_META = {
   '식비':      { color:'#DCE9FE', label:'식비' },
   '기타':      { color:'#ADB5BD', label:'기타' },
 };
-const CATEGORY_LIST = Object.keys(CATEGORY_META);
+const DEFAULT_CATEGORY_LIST = Object.keys(DEFAULT_CATEGORY_META);
+const CUSTOM_COLOR_PALETTE = ['#0F9D8A','#2F9E44','#E8590C','#D6336C','#7048E8','#1971C2','#F08C00','#495057'];
 const PAYMENT_LIST = ['카드', '현금', '스이카', '기타'];
 
 let state = {
@@ -198,6 +199,7 @@ let state = {
   showAddForm: false,
   currencyView: 'LOCAL', // 'LOCAL' | 'KRW' — 화면 전환용, 여행마다 진입 시 초기화
   expandedDates: new Set(), // 펼쳐진 날짜 그룹의 key 목록 — 기본은 전부 접힘
+  searchKeyword: '', // 거래 내역 검색어
 };
 
 function loadTrips(){
@@ -208,8 +210,22 @@ function saveTrips(){ localStorage.setItem(STORAGE_KEY, JSON.stringify(state.tri
 function uid(p='id'){ return p+'_'+Date.now().toString(36)+'_'+Math.random().toString(36).slice(2,8); }
 function escRe(s){ return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'); }
 
+/* ---------- 여행별 카테고리 (기본값 + 여행마다 추가/삭제 가능) ---------- */
+function getTripCategories(trip){
+  const disabled = new Set(trip.disabledCategories || []);
+  const defaults = DEFAULT_CATEGORY_LIST.filter(c => !disabled.has(c));
+  const customs = (trip.customCategories || []).map(c => c.name);
+  return [...defaults, ...customs];
+}
+function getCategoryMeta(trip, key){
+  if(DEFAULT_CATEGORY_META[key]) return DEFAULT_CATEGORY_META[key];
+  const custom = (trip.customCategories || []).find(c => c.name === key);
+  if(custom) return { color: custom.color, label: custom.name };
+  return { color:'#ADB5BD', label:key };
+}
+
 /* =========================================================
-   AI 스마트 분류 규칙 (8개 카테고리)
+   AI 스마트 분류 규칙 (기본 8개 카테고리 — 여행별로 숨긴 카테고리는 건너뜀)
 ========================================================= */
 const CATEGORY_RULES = [
   { cat:'숙박',     kws:['숙박','호텔','리조트','펜션','게스트하우스','캡슐호텔','료칸','민박','에어비앤비','도미토리'] },
@@ -221,9 +237,11 @@ const CATEGORY_RULES = [
   { cat:'간식',     kws:['커피','카페','라떼','베이커리','빵','디저트','편의점','로손','세이코마트','세븐일레븐','아이스크림','도넛','초콜릿','과자','야식','타이야끼','붕어빵','크레페','마카롱','도라야끼','카스테라','동구리','후지야','분메이도','롯카테이'] },
   { cat:'식비',     kws:['아침','점심','저녁','맛집','레스토랑','식당','정식','라멘','스시','우동','소바','카레','국수','덮밥','규동','마트','coop','코업','다이이치','다이치','새우마요','타코야끼','샌드위치','에비소바','이온몰','슈퍼','우유','샐러드'] },
 ];
-function categorize(desc){
+function categorize(desc, trip){
   const lower = desc.toLowerCase();
+  const disabled = new Set((trip && trip.disabledCategories) || []);
   for(const rule of CATEGORY_RULES){
+    if(disabled.has(rule.cat)) continue;
     for(const kw of rule.kws){ if(lower.includes(kw.toLowerCase())) return rule.cat; }
   }
   return '기타';
