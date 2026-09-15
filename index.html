@@ -154,13 +154,22 @@ function smartParse(text, tripYear, currencyUnit){
 ========================================================= */
 function fmt(n, symbol){ return (Math.round(n)||0).toLocaleString('ko-KR') + symbol; }
 function findTrip(id){ return state.trips.find(t => t.id === id); }
-function fmtDateHeader(dateStr, dow){
+function fmtDateHeader(dateStr){
   if(!dateStr) return '날짜 미상';
-  const [,m,d] = dateStr.split('-');
-  return `${parseInt(m)}/${parseInt(d)}${dow ? ' ('+dow+')' : ''}`;
+  const d = new Date(dateStr + 'T00:00:00');
+  if(isNaN(d.getTime())) return dateStr;
+  const days = ['일','월','화','수','목','금','토'];
+  return `${d.getMonth()+1}/${d.getDate()} (${days[d.getDay()]})`;
 }
 function escapeHtml(s){ return (s||'').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
 function rate(trip){ return parseFloat(trip.exchangeRate) || 0; }
+
+/* KRW로 표기된 거래를 현지통화 기준 금액으로 환산 (환율 미설정 시엔 원래 숫자를 그대로 합산) */
+function toLocalValue(trip, t){
+  if(t.currency !== 'KRW') return t.amount;
+  const r = rate(trip);
+  return r > 0 ? t.amount / r : t.amount;
+}
 
 /* 거래 1건의 표시 금액/단위를 현재 통화보기(state.currencyView) 기준으로 계산 */
 function displayTxn(trip, t){
@@ -191,8 +200,7 @@ function render(){
 function renderHome(){
   const trips = [...state.trips].sort((a,b) => (b.createdAt||0) - (a.createdAt||0));
   const tripCards = trips.map(t => {
-    const localTotal = t.transactions.filter(x=>x.currency!=='KRW').reduce((s,x)=>s+x.amount,0);
-    const krwTotal = t.transactions.filter(x=>x.currency==='KRW').reduce((s,x)=>s+x.amount,0);
+    const mergedTotal = t.transactions.reduce((s,x) => s + toLocalValue(t,x), 0);
     const sub = [t.yearMonth, t.destination].filter(Boolean).join(' · ');
     return `
     <div class="card soft-shadow tap cursor-pointer relative group p-5 fade-in" onclick="openTrip('${t.id}')">
@@ -205,8 +213,7 @@ function renderHome(){
       <div class="flex items-end justify-between">
         <div>
           <p class="text-[12px] text-[var(--ink-3)] mb-0.5">총 지출</p>
-          <p class="text-[20px] font-bold text-[var(--blue)]">${fmt(localTotal, t.currencyUnit)}</p>
-          ${krwTotal>0 ? `<p class="text-[12px] text-[var(--ink-3)] mt-0.5">원화 결제 ${fmt(krwTotal,'원')}</p>` : ''}
+          <p class="text-[20px] font-bold text-[var(--blue)]">${fmt(mergedTotal, t.currencyUnit)}</p>
         </div>
         <p class="text-[12px] text-[var(--ink-3)]">${t.transactions.length}건</p>
       </div>
@@ -395,8 +402,53 @@ function renderTripDetail(trip){
   ${renderTopBar(trip)}
   ${renderInputPanel(trip)}
   ${renderSummary(trip)}
+  ${renderFixedCategoryBlock(trip)}
   ${renderTransactionList(trip)}
   `;
+}
+
+/* ---------- 고정 순서 요약: 숙박 / 교통 / 식비(식비+간식) / 관광 ---------- */
+function renderFixedCategoryBlock(trip){
+  const krwView = state.currencyView === 'KRW';
+  const unitSymbol = krwView ? '원' : trip.currencyUnit;
+  const sums = { '숙박':0, '대중교통':0, '식비':0, '간식':0, '관광':0 };
+  trip.transactions.forEach(t => {
+    const val = krwView ? displayTxn(trip, t).value : toLocalValue(trip, t);
+    if(sums.hasOwnProperty(t.category)) sums[t.category] += val;
+  });
+
+  const items = [
+    { label:'숙박', value: sums['숙박'], color: CATEGORY_META['숙박'].color },
+    { label:'교통', value: sums['대중교통'], color: CATEGORY_META['대중교통'].color },
+    { label:'식비', value: sums['식비'] + sums['간식'], color: CATEGORY_META['식비'].color },
+    { label:'관광', value: sums['관광'], color: CATEGORY_META['관광'].color },
+  ];
+  const fixedTotal = items.reduce((s,i) => s + i.value, 0);
+
+  const rows = items.map(item => {
+    const pct = fixedTotal > 0 ? Math.round(item.value/fixedTotal*100) : 0;
+    return `
+    <div>
+      <div class="flex items-center justify-between mb-1.5">
+        <div class="flex items-center gap-2">
+          <span class="w-2 h-2 rounded-full shrink-0" style="background:${item.color}"></span>
+          <span class="text-[13px] font-medium text-[var(--ink)]">${item.label}</span>
+        </div>
+        <span class="text-[13px] font-semibold">${fmt(item.value, unitSymbol)}</span>
+      </div>
+      <div class="flex items-center gap-2.5">
+        <div class="flex-1 bar-track h-1.5"><div class="bar-fill h-1.5" style="width:${pct}%; background:${item.color}"></div></div>
+        <span class="text-[11px] text-[var(--ink-3)] w-8 text-right shrink-0">${pct}%</span>
+      </div>
+    </div>`;
+  }).join('');
+
+  return `
+  <div class="card soft-shadow p-5 sm:p-6 mb-5 fade-in">
+    <p class="text-[13px] text-[var(--ink-3)] mb-1">총 지출 금액 <span class="text-[var(--ink-3)] font-normal">(숙박·교통·식비·관광 합계)</span></p>
+    <p class="text-[26px] font-bold mb-4">${fmt(fixedTotal, unitSymbol)}</p>
+    <div class="space-y-3.5">${rows}</div>
+  </div>`;
 }
 
 function setCurrencyView(view){
@@ -492,29 +544,22 @@ function alertBar(msg){
   setTimeout(() => bar.remove(), 3500);
 }
 
-/* ---------- 요약 카드: 총지출 + 카테고리 비중 (가독성 개편) ---------- */
+/* ---------- 요약 카드: 총지출 + 카테고리 비중 (통화 합산, 가독성 개편) ---------- */
 function renderSummary(trip){
   const krwView = state.currencyView === 'KRW';
-  const localTxns = trip.transactions.filter(t => t.currency !== 'KRW');
-  const krwTxns = trip.transactions.filter(t => t.currency === 'KRW');
+  const unitSymbol = krwView ? '원' : trip.currencyUnit;
+  const noRateWarning = (!krwView && trip.transactions.some(t => t.currency === 'KRW') && rate(trip) <= 0);
 
-  let grandTotal, unitSymbol, byCategory, byPayment;
+  const byCategory = {}; CATEGORY_LIST.forEach(c => byCategory[c]=0);
+  const byPayment = {}; PAYMENT_LIST.forEach(p => byPayment[p]=0);
+  let grandTotal = 0;
 
-  if(krwView){
-    unitSymbol = '원';
-    grandTotal = trip.transactions.reduce((s,t) => s + displayTxn(trip,t).value, 0);
-    byCategory = {}; CATEGORY_LIST.forEach(c => byCategory[c]=0);
-    trip.transactions.forEach(t => byCategory[t.category] += displayTxn(trip,t).value);
-    byPayment = {}; PAYMENT_LIST.forEach(p => byPayment[p]=0);
-    trip.transactions.forEach(t => byPayment[t.payment] += displayTxn(trip,t).value);
-  } else {
-    unitSymbol = trip.currencyUnit;
-    grandTotal = localTxns.reduce((s,t)=>s+t.amount,0);
-    byCategory = {}; CATEGORY_LIST.forEach(c => byCategory[c]=0);
-    localTxns.forEach(t => byCategory[t.category] += t.amount);
-    byPayment = {}; PAYMENT_LIST.forEach(p => byPayment[p]=0);
-    localTxns.forEach(t => byPayment[t.payment] += t.amount);
-  }
+  trip.transactions.forEach(t => {
+    const v = krwView ? displayTxn(trip, t).value : toLocalValue(trip, t);
+    grandTotal += v;
+    byCategory[t.category] += v;
+    byPayment[t.payment] += v;
+  });
 
   const paymentLine = PAYMENT_LIST.filter(p => byPayment[p]>0).map(p => `${p} ${fmt(byPayment[p], unitSymbol)}`).join('   ·   ');
 
@@ -543,37 +588,19 @@ function renderSummary(trip){
   const suicaLine = trip.suicaBalance !== null
     ? `<p class="text-[12px] text-[var(--ink-3)] mt-2">스이카 초기 잔액 ${fmt(trip.suicaBalance, trip.currencyUnit)}</p>` : '';
 
-  const krwSeparateBlock = (!krwView && krwTxns.length > 0) ? (() => {
-    const krwTotal = krwTxns.reduce((s,t)=>s+t.amount,0);
-    const byCatKrw = {};
-    krwTxns.forEach(t => byCatKrw[t.category] = (byCatKrw[t.category]||0)+t.amount);
-    const rows = Object.entries(byCatKrw).sort((a,b)=>b[1]-a[1]).map(([c,v]) => `
-      <div class="flex items-center justify-between py-1.5">
-        <span class="text-[13px] text-[var(--ink-2)] flex items-center gap-2">
-          <span class="w-1.5 h-1.5 rounded-full inline-block" style="background:${CATEGORY_META[c]?.color||'#ADB5BD'}"></span>
-          ${CATEGORY_META[c]?.label||c}
-        </span>
-        <span class="text-[13px] font-medium">${fmt(v,'원')}</span>
-      </div>`).join('');
-    return `
-    <div class="card soft-shadow p-5 mt-4 fade-in">
-      <div class="flex items-baseline justify-between mb-2">
-        <h3 class="text-[13px] font-semibold text-[var(--ink-2)]">원화 결제 내역 <span class="text-[var(--ink-3)] font-normal">(원화 보기로 전환하면 합산돼요)</span></h3>
-        <p class="text-[16px] font-bold">${fmt(krwTotal,'원')}</p>
-      </div>
-      ${rows}
-    </div>`;
-  })() : '';
+  const warningLine = noRateWarning
+    ? `<p class="text-[12px] text-[var(--red)] mt-2">환율이 설정되지 않아 원화 결제 건이 정확히 합산되지 않았어요. <button class="underline" onclick="openSettingsModal('${trip.id}')">환율 설정하기</button></p>`
+    : '';
 
   return `
   <div class="card soft-shadow p-5 sm:p-6 mb-5 fade-in">
-    <p class="text-[13px] text-[var(--ink-3)] mb-1">총 지출${krwView ? '' : ` (${escapeHtml(trip.currencyUnit)})`}</p>
+    <p class="text-[13px] text-[var(--ink-3)] mb-1">총 지출${krwView ? '' : ` (${escapeHtml(trip.currencyUnit)} 환산 합계)`}</p>
     <p class="text-[32px] font-bold text-[var(--blue)] mb-1.5 tracking-tight">${fmt(grandTotal, unitSymbol)}</p>
     ${paymentLine ? `<p class="text-[12px] text-[var(--ink-3)]">${paymentLine}</p>` : ''}
     ${suicaLine}
+    ${warningLine}
     ${catRows ? `<div class="mt-4 pt-4 border-t border-[var(--line)] space-y-3.5">${catRows}</div>` : ''}
   </div>
-  ${krwSeparateBlock}
   `;
 }
 
@@ -586,19 +613,17 @@ function renderTransactionList(trip){
 
   const groupHtml = dateKeys.map(key => {
     const items = groups[key];
-    const dow = items[0].dow;
     let totalLabel;
     if(state.currencyView === 'KRW'){
       const t = items.reduce((s,x) => s + displayTxn(trip,x).value, 0);
       totalLabel = fmt(t, '원');
     } else {
-      const localTotal = items.filter(t=>t.currency!=='KRW').reduce((s,t)=>s+t.amount,0);
-      const krwTotal = items.filter(t=>t.currency==='KRW').reduce((s,t)=>s+t.amount,0);
-      totalLabel = [ localTotal ? fmt(localTotal, trip.currencyUnit) : '', krwTotal ? fmt(krwTotal, '원') : '' ].filter(Boolean).join(' + ');
+      const t = items.reduce((s,x) => s + toLocalValue(trip,x), 0);
+      totalLabel = fmt(t, trip.currencyUnit);
     }
     const rows = items.map(t => renderTxnRow(trip, t)).join('');
     const isOpen = state.expandedDates.has(key);
-    const dateLabel = key==='__nodate__' ? '날짜 미상' : fmtDateHeader(key, dow);
+    const dateLabel = key==='__nodate__' ? '날짜 미상' : fmtDateHeader(key);
     return `
     <div class="mb-2.5">
       <button class="w-full card soft-shadow tap flex items-center justify-between px-4 py-3.5" onclick="toggleDateGroup('${key}')">
